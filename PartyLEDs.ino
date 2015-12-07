@@ -73,7 +73,16 @@ AudioInputAnalog         adc(MIC_IN);
 AudioAnalyzeFFT1024      fft;
 AudioConnection          patchCord(adc, fft);
 
-float band[8];     // Value of different frequency bands
+int band[8][2] = { // Bin intervals of each frequency band
+  {2, 3},
+  {3, 5},
+  {5, 14},
+  {14, 32},
+  {32, 45},
+  {45, 69},
+  {69, 91},
+  {91, 116}
+};
 byte peak[8];      // Peak level of each column; used for falling dots
 byte dotCount = 0; // Frame counter for delaying dot-falling speed
 byte colCount = 0; // Frame counter for storing past column data
@@ -111,7 +120,7 @@ void setup() {
   matrix.setTextWrap(false);
   matrix.setTextColor(color);
 
-  // Initialize FFT
+  // Initialize spectrogram
   memset(peak, 0, sizeof(peak));
   memset(col , 0, sizeof(col));
 
@@ -124,7 +133,7 @@ void setup() {
   AudioMemory(12);
 }
 
-void check_bluetooth_status() {
+aci_evt_opcode_t get_bluetooth_status() {
   // Tell the nRF8001 to do whatever it should be working on.
   BTLEserial.pollACI();
 
@@ -145,15 +154,16 @@ void check_bluetooth_status() {
     // Set the last status change to this one
     last_status = status;
   }
+
+  return status;
 }
 
 bool poll_bluetooth() {
-  check_bluetooth_status();
-
   // Lets see if there's any data for us!
   unsigned int total_bytes = 0;
   unsigned int bytes_available;
-  while (last_status == ACI_EVT_CONNECTED && (bytes_available = BTLEserial.available()) > 0) {
+  while (get_bluetooth_status() == ACI_EVT_CONNECTED
+      && (bytes_available = BTLEserial.available()) > 0) {
     for (unsigned int i = total_bytes; i < total_bytes + bytes_available; i++) {
       char c = BTLEserial.read();
       if (i < MESSAGE_BUFFER_SIZE) {
@@ -161,11 +171,10 @@ bool poll_bluetooth() {
       }
     }
     total_bytes += bytes_available;
-
-    check_bluetooth_status();
   }
 
   if (total_bytes > 0) {
+    // We recieved a message!
     Serial.print("* "); Serial.print(total_bytes); Serial.println(F(" bytes available from BTLE"));
     
     // Terminate string
@@ -185,6 +194,7 @@ bool poll_bluetooth() {
 }
 
 bool change_display() {
+  // Check the message to see if it is a recognized instruction
   char *token;
   if ((token = strtok(message_buffer, " "))) {
     if (strcasecmp(token, "color") == 0) {
@@ -245,6 +255,7 @@ void rainbow() {
   delay(50);
 }
 
+// Slightly different, this makes the rainbow equally distributed throughout
 void rainbow_cycle() {
   for (int x = 0; x < MATRIX_WIDTH; x++) {
     for (int y = 0; y < MATRIX_HEIGHT; y++) {
@@ -259,6 +270,7 @@ void rainbow_cycle() {
   delay(50);
 }
 
+// Prints a scrolling message
 void message() {
   matrix.fillScreen(0);
   matrix.setCursor(message_cursor, 0);
@@ -271,34 +283,30 @@ void message() {
   delay(100);
 }
 
+// Performs FFT on audio input to display a spectrogram of different frequency bands
 void spectrogram() {
   if (fft.available()) {
-    // Read in different frequency bands
-    band[0] = fft.read(2,3);
-    band[1] = fft.read(3,5);
-    band[2] = fft.read(5,14);
-    band[3] = fft.read(14,32);
-    band[4] = fft.read(32,45);
-    band[5] = fft.read(45,69);
-    band[6] = fft.read(69,91);
-    band[7] = fft.read(91,116);
-    
-    // Fill background w/colors, then idle parts of columns will erase
+    // Fill background with colors, then idle parts of columns will erase
     matrix.fillRect(0, 0, 8, 3, RED);    // Upper section
     matrix.fillRect(0, 3, 8, 2, YELLOW); // Mid
     matrix.fillRect(0, 5, 8, 3, GREEN);  // Lower section
   
     // Downsample spectrum output to 8 columns:
     for(int x = 0; x < 8; x++) {
-      col[x][colCount] = (int) (band[x] * 256);
+      int *b = band[x];
+      int bandLvl = (int) (fft.read(b[0], b[1]) * 256);
+      
+      int *history = col[x];
+      history[colCount] = bandLvl;
       
       int minLvl, maxLvl;
-      minLvl = maxLvl = col[x][0];
+      minLvl = maxLvl = history[0];
       for(int i = 1; i < 10; i++) { // Get range of prior 10 frames
-        if(col[x][i] < minLvl) {
-          minLvl = col[x][i];
-        } else if(col[x][i] > maxLvl) {
-          maxLvl = col[x][i];
+        int lvl = history[i];
+        if(lvl < minLvl) {
+          minLvl = lvl;
+        } else if(lvl > maxLvl) {
+          maxLvl = lvl;
         }
       }
       // minLvl and maxLvl indicate the extents of the FFT output, used
@@ -307,15 +315,15 @@ void spectrogram() {
       // (e.g. at very low volume levels) the graph becomes super coarse
       // and 'jumpy'...so keep some minimum distance between them (this
       // also lets the graph go to zero when no sound is playing):
-      if ((maxLvl - minLvl) < 8) {
-        maxLvl = minLvl + 8;
-      }
-      minLvlAvg[x] = (minLvlAvg[x] * 7 + minLvl) >> 3; // Dampen min/max levels
-      maxLvlAvg[x] = (maxLvlAvg[x] * 7 + maxLvl) >> 3; // (fake rolling average)
+      maxLvl = max(maxLvl, minLvl + 8);
+      
+      int curMinLvlAvg = (minLvlAvg[x] * 7 + minLvl) >> 3; // Dampen min/max levels
+      int curMaxLvlAvg = (maxLvlAvg[x] * 7 + maxLvl) >> 3; // (fake rolling average)
+      minLvlAvg[x] = curMinLvlAvg;
+      maxLvlAvg[x] = curMaxLvlAvg;
   
       // Second fixed-point scale based on dynamic min/max levels:
-      int level = 10L * (col[x][colCount] - minLvlAvg[x]) /
-          (long) (maxLvlAvg[x] - minLvlAvg[x]);
+      int level = 10L * (bandLvl - curMinLvlAvg) / (long) (curMaxLvlAvg - curMinLvlAvg);
   
       // Clip output and convert to byte:
       int c;
@@ -327,23 +335,23 @@ void spectrogram() {
         c = level;
       }
   
-      if(c > peak[x]) {
+      if (c > peak[x]) {
         peak[x] = c; // Keep dot on top
       }
   
-      if(peak[x] <= 0) { // Empty column?
+      if (peak[x] <= 0) { // Empty column
         matrix.drawLine(x, 0, x, 7, OFF);
         continue;
-      } else if(c < 8) { // Partial column?
+      } else if (c < 8) { // Partial column
         matrix.drawLine(x, 0, x, 7 - c, OFF);
       }
   
       // The 'peak' dot color varies, but doesn't necessarily match
       // the three screen regions...yellow has a little extra influence.
       int y = 8 - peak[x];
-      if(y < 2) {
+      if (y < 2) {
         matrix.drawPixel(x, y, RED);
-      } else if(y < 6) {
+      } else if (y < 6) {
         matrix.drawPixel(x, y, YELLOW);
       } else {
         matrix.drawPixel(x, y, GREEN);
@@ -353,16 +361,16 @@ void spectrogram() {
     matrix.show();
   
     // Every fifth frame, make the peak pixels drop by 1:
-    if(++dotCount >= 5) {
+    if (++dotCount >= 5) {
       dotCount = 0;
-      for(int x = 0; x < 8; x++) {
-        if(peak[x] > 0) {
+      for (int x = 0; x < 8; x++) {
+        if (peak[x] > 0) {
           peak[x]--;
         }
       }
     }
   
-    if(++colCount >= 10) {
+    if (++colCount >= 10) {
       colCount = 0;
     }
   }
