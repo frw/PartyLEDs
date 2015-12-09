@@ -34,6 +34,7 @@
 #define DISPLAY_MESSAGE       2
 #define DISPLAY_SPECTROGRAM   3
 #define DISPLAY_SNAKE         4
+#define DISPLAY_SINE          5
 
 // BTLE
 Adafruit_BLE_UART BTLEserial = Adafruit_BLE_UART(ADAFRUITBLE_REQ, ADAFRUITBLE_RDY, ADAFRUITBLE_RST);
@@ -107,7 +108,7 @@ aci_evt_opcode_t get_bluetooth_status() {
 }
 
 // RAINBOW
-int rainbow_offset = 0;
+byte rainbow_offset = 0;
 
 void rainbow() {
   for (int x = 0; x < MATRIX_WIDTH; x++) {
@@ -117,14 +118,12 @@ void rainbow() {
   }
   matrix.show();
 
-  if (++rainbow_offset >= 256) {
-    rainbow_offset = 0;
-  }
+  rainbow_offset++;
   delay(50);
 }
 
 // RAINBOW CYCLE
-int rainbow_cycle_offset = 0;
+byte rainbow_cycle_offset = 0;
 
 // Slightly different, this makes the rainbow equally distributed throughout
 void rainbow_cycle() {
@@ -135,10 +134,35 @@ void rainbow_cycle() {
   }
   matrix.show();
 
-  if (++rainbow_cycle_offset >= 256 * 5) { // 5 cycles of all colors on wheel
-    rainbow_cycle_offset = 0;
-  }
+  rainbow_cycle_offset++;
   delay(50);
+}
+
+// SINE
+byte sine_offset = 0; // counter for current position of sine waves
+
+byte sin8(int x) {
+   return sin(2 * 3.14159265 * x / 256) * 128 + 128; 
+}
+
+void sine() { 
+  // Draw one frame of the animation into the LED array
+  for (byte x = 0; x < MATRIX_WIDTH; x++) {
+    for (int y = 0; y < MATRIX_HEIGHT; y++) {
+
+      // Calculate "sine" waves with varying periods
+      // sin8 is used for speed; cos8, quadwave8, or triwave8 would also work here
+      byte r = abs(y * 256 / MATRIX_HEIGHT - sin8(sine_offset * 9 + x * 16));
+      byte g = abs(y * 256 / MATRIX_HEIGHT - sin8(sine_offset * 10 + x * 16));
+      byte b = abs(y * 256 / MATRIX_HEIGHT - sin8(sine_offset * 11 + x * 16));
+  
+      matrix.drawPixel(x, y, matrix.Color(255 - r, 255 - g, 255 - b));
+    }
+  }
+  matrix.show();
+  
+  sine_offset++;
+  delay(20);
 }
 
 // MESSAGE
@@ -525,6 +549,11 @@ bool change_display() {
       snake_reset();
       return true;
     }
+
+    if (strcasecmp(token, "sine") == 0) { 
+      current_display = DISPLAY_SINE; 
+      return true; 
+    }
   }
   
   return false;
@@ -555,6 +584,9 @@ void loop() {
       break;
     case DISPLAY_SNAKE:
       snake();
+      break;
+    case DISPLAY_SINE: 
+      sine(); 
       break;
   }
 }
