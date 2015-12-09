@@ -33,12 +33,12 @@
 #define DISPLAY_RAINBOW_CYCLE 1
 #define DISPLAY_MESSAGE       2
 #define DISPLAY_SPECTROGRAM   3
+#define DISPLAY_SNAKE         4
 
 // BTLE
 Adafruit_BLE_UART BTLEserial = Adafruit_BLE_UART(ADAFRUITBLE_REQ, ADAFRUITBLE_RDY, ADAFRUITBLE_RST);
 
 aci_evt_opcode_t last_status = ACI_EVT_DISCONNECTED;
-unsigned int message_size;
 char message_buffer[MESSAGE_BUFFER_SIZE + 1];
 
 // NEOPIXEL MATRIX
@@ -52,43 +52,14 @@ const uint16_t OFF = matrix.Color(0, 0, 0);
 const uint16_t RED = matrix.Color(255, 0, 0);
 const uint16_t YELLOW = matrix.Color(255, 255, 0);
 const uint16_t GREEN = matrix.Color(0, 255, 0);
+const uint16_t CYAN = matrix.Color(0, 255, 255);
+const uint16_t BLUE = matrix.Color(0, 0, 255);
+const uint16_t MAGENTA = matrix.Color(255, 0, 255);
+const uint16_t WHITE = matrix.Color(255, 255, 255);
 
 // CURRENT DISPLAY
 unsigned int current_display = DISPLAY_RAINBOW;
 uint16_t color = GREEN; // Color for mono-color displays
-
-// RAINBOW
-int rainbow_state = 0;
-
-// RAINBOW CYCLE
-int rainbow_cycle_state = 0;
-
-// MESSAGE
-char message_text[MESSAGE_BUFFER_SIZE];
-byte message_length;
-int message_cursor;
-
-// SPECTROGRAM
-AudioInputAnalog         adc(MIC_IN);
-AudioAnalyzeFFT1024      fft;
-AudioConnection          patchCord(adc, fft);
-
-int band[8][2] = { // Bin intervals of each frequency band
-  {2, 3},
-  {3, 5},
-  {5, 14},
-  {14, 32},
-  {32, 45},
-  {45, 69},
-  {69, 91},
-  {91, 116}
-};
-byte peak[8];      // Peak level of each column; used for falling dots
-byte dotCount = 0; // Frame counter for delaying dot-falling speed
-byte colCount = 0; // Frame counter for storing past column data
-int col[8][10];    // Column levels for the prior 10 frames
-int minLvlAvg[8];  // For dynamic adjustment of low & high ends of graph,
-int maxLvlAvg[8];  // Pseudo rolling averages for the prior few frames.
 
 // Converts a 32-bit int to a 16-bit color
 uint16_t itoc (uint32_t color) {
@@ -108,29 +79,6 @@ uint32_t wheel(byte pos) {
   }
   pos -= 170;
   return matrix.Color(pos * 3, 255 - pos * 3, 0);
-}
-
-void setup() {
-  // Initialize BTLE
-  BTLEserial.begin();
-
-  // Initialize NeoPixel Matrix
-  matrix.begin();
-  matrix.setBrightness(LED_BRIGHTNESS);
-  matrix.setTextWrap(false);
-  matrix.setTextColor(color);
-
-  // Initialize spectrogram
-  memset(peak, 0, sizeof(peak));
-  memset(col , 0, sizeof(col));
-
-  for(int i = 0; i < 8; i++) {
-    minLvlAvg[i] = 0;
-    maxLvlAvg[i] = 512;
-  }
-  
-  // Audio connections require memory to work.
-  AudioMemory(12);
 }
 
 aci_evt_opcode_t get_bluetooth_status() {
@@ -158,117 +106,45 @@ aci_evt_opcode_t get_bluetooth_status() {
   return status;
 }
 
-bool poll_bluetooth() {
-  // Lets see if there's any data for us!
-  unsigned int total_bytes = 0;
-  unsigned int bytes_available;
-  while (get_bluetooth_status() == ACI_EVT_CONNECTED
-      && (bytes_available = BTLEserial.available()) > 0) {
-    for (unsigned int i = total_bytes; i < total_bytes + bytes_available; i++) {
-      char c = BTLEserial.read();
-      if (i < MESSAGE_BUFFER_SIZE) {
-        message_buffer[i] = c;
-      }
-    }
-    total_bytes += bytes_available;
-  }
-
-  if (total_bytes > 0) {
-    // We recieved a message!
-    Serial.print("* "); Serial.print(total_bytes); Serial.println(F(" bytes available from BTLE"));
-    
-    // Terminate string
-    int total_length = MESSAGE_BUFFER_SIZE < total_bytes ? MESSAGE_BUFFER_SIZE : total_bytes;
-    if (message_buffer[total_length - 1] == '\n') {
-      message_buffer[total_length - 1] = '\0';
-    } else {
-      message_buffer[total_length] = '\0';
-    }
-    
-    Serial.println(message_buffer);
-
-    return true;
-  }
-
-  return false;
-}
-
-bool change_display() {
-  // Check the message to see if it is a recognized instruction
-  char *token;
-  if ((token = strtok(message_buffer, " "))) {
-    if (strcasecmp(token, "color") == 0) {
-      // Check if a color was passed in as an argument
-      if ((token = strtok(NULL, ""))) {
-        // If string starts with '#', then skip the first character
-        if (token[0] == '#') {
-          token += 1;
-        }
-        color = itoc(strtol(token, NULL, 16));
-        matrix.setTextColor(color);
-      }
-    }
-    if (strcasecmp(token, "rainbow") == 0) {
-      current_display = DISPLAY_RAINBOW;
-      return true;
-    }
-    if (strcasecmp(token, "rainbowcycle") == 0) {
-      current_display = DISPLAY_RAINBOW_CYCLE;
-      return true;
-    }
-    if (strcasecmp(token, "message") == 0) {
-      current_display = DISPLAY_MESSAGE;
-
-      char *text;
-      // Check if a message was passed in as an argument
-      if ((token = strtok(NULL, ""))) {
-        text = token;
-      } else {
-        text = (char *) "Hello!";
-      }
-      strcpy(message_text, text);
-      message_length = strlen(message_text);
-      message_cursor = matrix.width();
-      
-      return true;
-    }
-    if (strcasecmp(token, "spectrogram") == 0) {
-      current_display = DISPLAY_SPECTROGRAM;
-      return true;
-    }
-  }
-  
-  return false;
-}
+// RAINBOW
+int rainbow_offset = 0;
 
 void rainbow() {
   for (int x = 0; x < MATRIX_WIDTH; x++) {
     for (int y = 0; y < MATRIX_HEIGHT; y++) {
-      matrix.drawPixel(x, y, wheel((y * MATRIX_WIDTH + x + rainbow_state) & 0xFF));
+      matrix.drawPixel(x, y, wheel((y * MATRIX_WIDTH + x + rainbow_offset) & 0xFF));
     }
   }
   matrix.show();
 
-  if (++rainbow_state >= 256) {
-    rainbow_state = 0;
+  if (++rainbow_offset >= 256) {
+    rainbow_offset = 0;
   }
   delay(50);
 }
+
+// RAINBOW CYCLE
+int rainbow_cycle_offset = 0;
 
 // Slightly different, this makes the rainbow equally distributed throughout
 void rainbow_cycle() {
   for (int x = 0; x < MATRIX_WIDTH; x++) {
     for (int y = 0; y < MATRIX_HEIGHT; y++) {
-      matrix.drawPixel(x, y, wheel((((y * MATRIX_WIDTH + x) * 256 / NUM_PIXELS) + rainbow_cycle_state) & 0xFF));
+      matrix.drawPixel(x, y, wheel((((y * MATRIX_WIDTH + x) * 256 / NUM_PIXELS) + rainbow_cycle_offset) & 0xFF));
     }
   }
   matrix.show();
 
-  if (++rainbow_cycle_state >= 256 * 5) { // 5 cycles of all colors on wheel
-    rainbow_cycle_state = 0;
+  if (++rainbow_cycle_offset >= 256 * 5) { // 5 cycles of all colors on wheel
+    rainbow_cycle_offset = 0;
   }
   delay(50);
 }
+
+// MESSAGE
+char message_text[MESSAGE_BUFFER_SIZE];
+byte message_length;
+int message_cursor;
 
 // Prints a scrolling message
 void message() {
@@ -282,6 +158,28 @@ void message() {
   
   delay(100);
 }
+
+// SPECTROGRAM
+AudioInputAnalog         adc(MIC_IN);
+AudioAnalyzeFFT1024      fft;
+AudioConnection          patchCord(adc, fft);
+
+int band[8][2] = { // Bin intervals of each frequency band
+  {   2,   3 },
+  {   3,   5 },
+  {   5,  14 },
+  {  14,  32 },
+  {  32,  45 },
+  {  45,  69 },
+  {  69,  91 },
+  {  91, 116 }
+};
+byte peak[8];      // Peak level of each column; used for falling dots
+byte dotCount = 0; // Frame counter for delaying dot-falling speed
+byte colCount = 0; // Frame counter for storing past column data
+int col[8][10];    // Column levels for the prior 10 frames
+int minLvlAvg[8];  // For dynamic adjustment of low & high ends of graph,
+int maxLvlAvg[8];  // Pseudo rolling averages for the prior few frames.
 
 // Performs FFT on audio input to display a spectrogram of different frequency bands
 void spectrogram() {
@@ -376,11 +274,270 @@ void spectrogram() {
   }
 }
 
+// SNAKE
+unsigned int snake_length;
+unsigned int snake_pos[NUM_PIXELS][2];
+byte snake_dx;
+byte snake_dy;
+unsigned int snake_food_x;
+unsigned int snake_food_y;
+int snake_dying_count;
+
+void snake_move() {
+  // Check if is press button controller message
+  if (message_buffer[0] == '!' && message_buffer[1] == 'B') {
+    switch (message_buffer[2]) {
+      case '5': // Up
+        if (snake_dy == 0) {
+          snake_dx = 0;
+          snake_dy = -1;
+        }
+        break;
+      case '6': // Down
+        if (snake_dy == 0) {
+          snake_dx = 0;
+          snake_dy = 1;
+        }
+        break;
+      case '7': // Left
+        if (snake_dx == 0) {
+          snake_dx = -1;
+          snake_dy = 0;
+        }
+        break;
+      case '8': // Right
+        if (snake_dx == 0) {
+          snake_dx = 1;
+          snake_dy = 0;
+        }
+        break;
+    }
+  }
+}
+
+void snake_spawn_food() {
+  int empty_spaces = NUM_PIXELS - snake_length;
+  int next_food = rand() % empty_spaces;
+  
+  int count = 0;
+  for (unsigned int x = 0; x < MATRIX_WIDTH; x++) {
+    for (unsigned int y = 0; y < MATRIX_HEIGHT; y++) {
+      for (unsigned int i = 0; i < snake_length; i++) {
+        unsigned int *part = snake_pos[i];
+        if (part[0] == x && part[1] == y) {
+          // Skip to next cell as space is occupied by snake
+          goto next;
+        }
+      }
+      
+      if (count == next_food) {
+        snake_food_x = x;
+        snake_food_y = y;
+        return;
+      } else {
+        count++;
+      }
+      
+      next: ;
+    }
+  }
+}
+
+void snake_reset() {
+  snake_length = 5;
+  for (int i = 0; i < 5; i++) {
+    unsigned int *part = snake_pos[i];
+    part[0] = 4 - i;
+    part[1] = MATRIX_HEIGHT  / 2;
+  }
+  snake_dx = 1;
+  snake_dy = 0;
+  snake_spawn_food();
+  snake_dying_count = 0;
+}
+
+void snake_draw() {
+  for (unsigned int i = 0; i < snake_length; i++) {
+      unsigned int *part = snake_pos[i];
+      matrix.drawPixel(part[0], part[1], wheel(i * 256 / snake_length));
+  }
+}
+
+void snake() {
+  matrix.fillScreen(0);
+  
+  unsigned int *head = snake_pos[0];
+  unsigned int next_x = (head[0] + snake_dx) % MATRIX_WIDTH;
+  unsigned int next_y = (head[1] + snake_dy) % MATRIX_HEIGHT;
+
+  if (snake_dying_count > 0) {
+    // Draw snake at odd frames only to produce flashing effect
+    if ((snake_dying_count & 1) == 1) {
+      snake_draw();
+    }
+
+    snake_dying_count++;
+    if (snake_dying_count == 7) {
+      snake_reset();
+    }
+  } else {
+    // Check if snake collided with its own body
+    for (unsigned int i = 0; i < snake_length - 1; i++) {
+      unsigned int *part = snake_pos[i];
+      // Collision detected
+      if (part[0] == next_x && part[1] == next_y) {
+        snake_dying_count++;
+        return;
+      }
+    }
+
+    // If snake ate the food, increase snake length
+    if (next_x == snake_food_x && next_y == snake_food_y) {
+      snake_length++;
+      snake_spawn_food();
+    }
+
+    // Move snake in the right direction
+    for (unsigned int i = 0; i < snake_length; i++) {
+      unsigned int *part = snake_pos[i];
+      unsigned int temp_x = part[0];
+      unsigned int temp_y = part[1];
+      part[0] = next_x;
+      part[1] = next_y;
+      next_x = temp_x;
+      next_y = temp_y;
+    }
+
+    matrix.drawPixel(snake_food_x, snake_food_y, WHITE);
+    snake_draw();
+  }
+  matrix.show();
+
+  delay(300);
+}
+
+void setup() {
+  // Initialize RNG
+  srand(millis());
+  
+  // Initialize BTLE
+  BTLEserial.begin();
+
+  // Initialize NeoPixel Matrix
+  matrix.begin();
+  matrix.setBrightness(LED_BRIGHTNESS);
+  matrix.setTextWrap(false);
+  matrix.setTextColor(color);
+
+  // Initialize spectrogram
+  memset(peak, 0, sizeof(peak));
+  memset(col , 0, sizeof(col));
+
+  for(int i = 0; i < 8; i++) {
+    minLvlAvg[i] = 0;
+    maxLvlAvg[i] = 512;
+  }
+  
+  // Audio connections require memory to work.
+  AudioMemory(12);
+}
+
+bool poll_bluetooth() {
+  // Lets see if there's any data for us!
+  unsigned int total_bytes = 0;
+  unsigned int bytes_available;
+  while (get_bluetooth_status() == ACI_EVT_CONNECTED
+      && (bytes_available = BTLEserial.available()) > 0) {
+    for (unsigned int i = total_bytes; i < total_bytes + bytes_available; i++) {
+      char c = BTLEserial.read();
+      if (i < MESSAGE_BUFFER_SIZE) {
+        message_buffer[i] = c;
+      }
+    }
+    total_bytes += bytes_available;
+  }
+
+  if (total_bytes > 0) {
+    // We recieved a message!
+    Serial.print("* "); Serial.print(total_bytes); Serial.println(F(" bytes available from BTLE"));
+    
+    // Terminate string
+    int total_length = MESSAGE_BUFFER_SIZE < total_bytes ? MESSAGE_BUFFER_SIZE : total_bytes;
+    if (message_buffer[total_length - 1] == '\n') {
+      message_buffer[total_length - 1] = '\0';
+    } else {
+      message_buffer[total_length] = '\0';
+    }
+    
+    Serial.println(message_buffer);
+
+    return true;
+  }
+
+  return false;
+}
+
+bool change_display() {
+  // Check the message to see if it is a recognized instruction
+  char *token;
+  if ((token = strtok(message_buffer, " "))) {
+    if (strcasecmp(token, "color") == 0) {
+      // Check if a color was passed in as an argument
+      if ((token = strtok(NULL, ""))) {
+        // If string starts with '#', then skip the first character
+        if (token[0] == '#') {
+          token += 1;
+        }
+        color = itoc(strtol(token, NULL, 16));
+        matrix.setTextColor(color);
+      }
+    }
+    if (strcasecmp(token, "rainbow") == 0) {
+      current_display = DISPLAY_RAINBOW;
+      return true;
+    }
+    if (strcasecmp(token, "rainbowcycle") == 0) {
+      current_display = DISPLAY_RAINBOW_CYCLE;
+      return true;
+    }
+    if (strcasecmp(token, "message") == 0) {
+      current_display = DISPLAY_MESSAGE;
+
+      char *text;
+      // Check if a message was passed in as an argument
+      if ((token = strtok(NULL, ""))) {
+        text = token;
+      } else {
+        text = (char *) "Hello!";
+      }
+      strcpy(message_text, text);
+      message_length = strlen(message_text);
+      message_cursor = matrix.width();
+      
+      return true;
+    }
+    if (strcasecmp(token, "spectrogram") == 0) {
+      current_display = DISPLAY_SPECTROGRAM;
+      return true;
+    }
+    if (strcasecmp(token, "snake") == 0) {
+      current_display = DISPLAY_SNAKE;
+      snake_reset();
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 void loop() {
   // Check if we received a new BTLE message
-  if (poll_bluetooth()) {
-    // Change display accordingly
-    change_display();
+  if (poll_bluetooth() && !change_display()) {
+    switch (current_display) {
+      case DISPLAY_SNAKE:
+        snake_move();
+        break;
+    }
   }
 
   switch (current_display) {
@@ -395,6 +552,9 @@ void loop() {
       break;
     case DISPLAY_SPECTROGRAM:
       spectrogram();
+      break;
+    case DISPLAY_SNAKE:
+      snake();
       break;
   }
 }
