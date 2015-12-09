@@ -21,6 +21,8 @@
 #define LED_OUT 23
 #define MIC_IN A0
 
+#define BTLE_NAME "PARTY"
+
 #define LED_BRIGHTNESS 25 // Low brightness to limit current draw
 
 #define MATRIX_WIDTH 8
@@ -31,10 +33,10 @@
 
 #define DISPLAY_RAINBOW       0
 #define DISPLAY_RAINBOW_CYCLE 1
-#define DISPLAY_MESSAGE       2
-#define DISPLAY_SPECTROGRAM   3
-#define DISPLAY_SNAKE         4
-#define DISPLAY_SINE          5
+#define DISPLAY_SINE          2
+#define DISPLAY_MESSAGE       3
+#define DISPLAY_SPECTROGRAM   4
+#define DISPLAY_SNAKE         5
 
 // BTLE
 Adafruit_BLE_UART BTLEserial = Adafruit_BLE_UART(ADAFRUITBLE_REQ, ADAFRUITBLE_RDY, ADAFRUITBLE_RST);
@@ -189,14 +191,14 @@ AudioAnalyzeFFT1024      fft;
 AudioConnection          patchCord(adc, fft);
 
 int band[8][2] = { // Bin intervals of each frequency band
-  {   2,   3 },
-  {   3,   5 },
-  {   5,  14 },
-  {  14,  32 },
-  {  32,  45 },
-  {  45,  69 },
-  {  69,  91 },
-  {  91, 116 }
+  {   2,  17 },
+  {  17,  32 },
+  {  32,  47 },
+  {  47,  62 },
+  {  62,  77 },
+  {  77,  92 },
+  {  92, 107 },
+  { 107, 122 }
 };
 byte peak[8];      // Peak level of each column; used for falling dots
 byte dotCount = 0; // Frame counter for delaying dot-falling speed
@@ -237,7 +239,7 @@ void spectrogram() {
       // (e.g. at very low volume levels) the graph becomes super coarse
       // and 'jumpy'...so keep some minimum distance between them (this
       // also lets the graph go to zero when no sound is playing):
-      maxLvl = max(maxLvl, minLvl + 8);
+      maxLvl = max(maxLvl, minLvl + 25);
       
       int curMinLvlAvg = (minLvlAvg[x] * 7 + minLvl) >> 3; // Dampen min/max levels
       int curMaxLvlAvg = (maxLvlAvg[x] * 7 + maxLvl) >> 3; // (fake rolling average)
@@ -260,30 +262,19 @@ void spectrogram() {
       if (c > peak[x]) {
         peak[x] = c; // Keep dot on top
       }
+
+      // Turn off dots in partial columns
+      matrix.drawLine(x, 0, x, max(0, 7 - c), OFF);
   
-      if (peak[x] <= 0) { // Empty column
-        matrix.drawLine(x, 0, x, 7, OFF);
-        continue;
-      } else if (c < 8) { // Partial column
-        matrix.drawLine(x, 0, x, 7 - c, OFF);
-      }
-  
-      // The 'peak' dot color varies, but doesn't necessarily match
-      // the three screen regions...yellow has a little extra influence.
+      // Draw a white 'peak' dot
       int y = 8 - peak[x];
-      if (y < 2) {
-        matrix.drawPixel(x, y, RED);
-      } else if (y < 6) {
-        matrix.drawPixel(x, y, YELLOW);
-      } else {
-        matrix.drawPixel(x, y, GREEN);
-      }
+      matrix.drawPixel(x, y, WHITE);
     }
   
     matrix.show();
   
-    // Every fifth frame, make the peak pixels drop by 1:
-    if (++dotCount >= 5) {
+    // Every eighth frame, make the peak pixels drop by 1:
+    if (++dotCount >= 8) {
       dotCount = 0;
       for (int x = 0; x < 8; x++) {
         if (peak[x] > 0) {
@@ -383,7 +374,7 @@ void snake_reset() {
 void snake_draw() {
   for (unsigned int i = 0; i < snake_length; i++) {
       unsigned int *part = snake_pos[i];
-      matrix.drawPixel(part[0], part[1], wheel(i * 256 / snake_length));
+      matrix.drawPixel(part[0], part[1], wheel(i * 256 / NUM_PIXELS));
   }
 }
 
@@ -395,8 +386,8 @@ void snake() {
   unsigned int next_y = (head[1] + snake_dy) % MATRIX_HEIGHT;
 
   if (snake_dying_count > 0) {
-    // Draw snake at odd frames only to produce flashing effect
-    if ((snake_dying_count & 1) == 1) {
+    // Draw snake at even frames only to produce flashing effect
+    if ((snake_dying_count & 1) == 0) {
       snake_draw();
     }
 
@@ -415,10 +406,11 @@ void snake() {
       }
     }
 
+    bool ate_food = false;
     // If snake ate the food, increase snake length
     if (next_x == snake_food_x && next_y == snake_food_y) {
       snake_length++;
-      snake_spawn_food();
+      ate_food = true;
     }
 
     // Move snake in the right direction
@@ -430,6 +422,10 @@ void snake() {
       part[1] = next_y;
       next_x = temp_x;
       next_y = temp_y;
+    }
+
+    if (ate_food) {
+      snake_spawn_food();
     }
 
     matrix.drawPixel(snake_food_x, snake_food_y, WHITE);
@@ -445,6 +441,7 @@ void setup() {
   srand(millis());
   
   // Initialize BTLE
+  BTLEserial.setDeviceName(BTLE_NAME);
   BTLEserial.begin();
 
   // Initialize NeoPixel Matrix
@@ -576,6 +573,9 @@ void loop() {
     case DISPLAY_RAINBOW_CYCLE:
       rainbow_cycle();
       break;
+    case DISPLAY_SINE: 
+      sine(); 
+      break;
     case DISPLAY_MESSAGE:
       message();
       break;
@@ -584,9 +584,6 @@ void loop() {
       break;
     case DISPLAY_SNAKE:
       snake();
-      break;
-    case DISPLAY_SINE: 
-      sine(); 
       break;
   }
 }
