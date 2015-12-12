@@ -34,9 +34,12 @@
 #define DISPLAY_RAINBOW       0
 #define DISPLAY_RAINBOW_CYCLE 1
 #define DISPLAY_SINE          2
-#define DISPLAY_MESSAGE       3
-#define DISPLAY_SPECTROGRAM   4
-#define DISPLAY_SNAKE         5
+#define DISPLAY_PLASMA        3
+#define DISPLAY_CONFETTI      4
+#define DISPLAY_EFFECTS_CYCLE 5
+#define DISPLAY_MESSAGE       6
+#define DISPLAY_SPECTROGRAM   7
+#define DISPLAY_SNAKE         8
 
 // BTLE
 Adafruit_BLE_UART BTLEserial = Adafruit_BLE_UART(ADAFRUITBLE_REQ, ADAFRUITBLE_RDY, ADAFRUITBLE_RST);
@@ -50,19 +53,39 @@ Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(MATRIX_WIDTH, MATRIX_HEIGHT, LED_
   NEO_MATRIX_COLUMNS + NEO_MATRIX_PROGRESSIVE,
   NEO_GRB            + NEO_KHZ800);
 
-// COLORS
-const uint16_t OFF = matrix.Color(0, 0, 0);
-const uint16_t RED = matrix.Color(255, 0, 0);
-const uint16_t YELLOW = matrix.Color(255, 255, 0);
-const uint16_t GREEN = matrix.Color(0, 255, 0);
-const uint16_t CYAN = matrix.Color(0, 255, 255);
-const uint16_t BLUE = matrix.Color(0, 0, 255);
-const uint16_t MAGENTA = matrix.Color(255, 0, 255);
-const uint16_t WHITE = matrix.Color(255, 255, 255);
+uint16_t CRGB(uint8_t r, uint8_t g, uint8_t b) {
+  return matrix.Color(r, g, b);
+}
 
-// CURRENT DISPLAY
-unsigned int current_display = DISPLAY_RAINBOW;
-uint16_t color = GREEN; // Color for mono-color displays
+uint16_t CHSV(uint8_t h, uint8_t s, uint8_t v) {
+  unsigned char region, remainder, p, q, t;
+
+  if (s == 0) {
+      return matrix.Color(v, v, v);
+  }
+
+  region = h / 43;
+  remainder = (h - (region * 43)) * 6; 
+
+  p = (v * (255 - s)) >> 8;
+  q = (v * (255 - ((s * remainder) >> 8))) >> 8;
+  t = (v * (255 - ((s * (255 - remainder)) >> 8))) >> 8;
+
+  switch (region) {
+    case 0:
+      return matrix.Color(v, t, p);
+    case 1:
+      return matrix.Color(q, v, p);
+    case 2:
+      return matrix.Color(p, v, t);
+    case 3:
+      return matrix.Color(p, q, v);
+    case 4:
+      return matrix.Color(t, p, v);
+    default:
+      return matrix.Color(v, p, q);
+  }
+}
 
 // Converts a 32-bit int to a 16-bit color
 uint16_t itoc (uint32_t color) {
@@ -83,6 +106,28 @@ uint32_t wheel(byte pos) {
   pos -= 170;
   return matrix.Color(pos * 3, 255 - pos * 3, 0);
 }
+
+byte sin8(int x) {
+   return sin(2 * 3.14159265 * x / 256) * 128 + 128; 
+}
+
+byte cos8(int x) {
+   return sin8(x + 64);
+}
+
+// COLORS
+const uint16_t OFF = CRGB(0, 0, 0);
+const uint16_t RED = CRGB(255, 0, 0);
+const uint16_t YELLOW = CRGB(255, 255, 0);
+const uint16_t GREEN = CRGB(0, 255, 0);
+const uint16_t CYAN = CRGB(0, 255, 255);
+const uint16_t BLUE = CRGB(0, 0, 255);
+const uint16_t MAGENTA = CRGB(255, 0, 255);
+const uint16_t WHITE = CRGB(255, 255, 255);
+
+// CURRENT DISPLAY
+unsigned int current_display = DISPLAY_RAINBOW;
+uint16_t color = GREEN; // Color for mono-color displays
 
 aci_evt_opcode_t get_bluetooth_status() {
   // Tell the nRF8001 to do whatever it should be working on.
@@ -143,10 +188,6 @@ void rainbow_cycle() {
 // SINE
 byte sine_offset = 0; // counter for current position of sine waves
 
-byte sin8(int x) {
-   return sin(2 * 3.14159265 * x / 256) * 128 + 128; 
-}
-
 void sine() { 
   // Draw one frame of the animation into the LED array
   for (byte x = 0; x < MATRIX_WIDTH; x++) {
@@ -158,13 +199,62 @@ void sine() {
       byte g = abs(y * 256 / MATRIX_HEIGHT - sin8(sine_offset * 10 + x * 16));
       byte b = abs(y * 256 / MATRIX_HEIGHT - sin8(sine_offset * 11 + x * 16));
   
-      matrix.drawPixel(x, y, matrix.Color(255 - r, 255 - g, 255 - b));
+      matrix.drawPixel(x, y, CRGB(255 - r, 255 - g, 255 - b));
     }
   }
   matrix.show();
   
   sine_offset++;
   delay(20);
+}
+
+// PLASMA
+byte plasma_offset = 0; // counter for radial color wave motion
+int plasma_vector = 0; // counter for orbiting plasma center
+
+void plasma() {
+  // Calculate current center of plasma pattern (can be offscreen)
+  int xOffset = cos8(plasma_vector / 256);
+  int yOffset = sin8(plasma_vector / 256);
+
+  // Draw one frame of the animation into the LED array
+  for (int x = 0; x < MATRIX_WIDTH; x++) {
+    for (int y = 0; y < MATRIX_HEIGHT; y++) {
+      byte color = sin8(sqrt(sq(((float)x - 7.5) * 10 + xOffset - 127) + sq(((float)y - 2) * 10 + yOffset - 127)) + plasma_offset);
+      matrix.drawPixel(x, y, CHSV(color, 255, 255));
+    }
+  }
+  matrix.show();
+
+  plasma_offset++; // wraps at 255 for sin8
+  plasma_vector += 16; // using an int for slower orbit (wraps at 65536)
+}
+
+// CONFETTI
+void confetti() {
+  // scatter random colored pixels at several random coordinates
+  matrix.drawPixel(random() % MATRIX_WIDTH, random() % MATRIX_HEIGHT, CHSV(random() & 0xFF, 255, 255));
+  matrix.show();
+}
+
+// EFFECTS CYCLE
+void (*effect_functions[])() = {
+  rainbow,
+  rainbow_cycle,
+  sine,
+  plasma,
+  confetti
+};
+const byte num_effects = sizeof(effect_functions) / sizeof(effect_functions[0]);
+int current_effect;
+long last_effect_change;
+
+void effects_cycle() {
+  if (millis() - last_effect_change > 15000) { // 15s per effect
+    current_effect = (current_effect + 1) % num_effects;
+  }
+
+  (*effect_functions[current_effect])();
 }
 
 // MESSAGE
@@ -521,6 +611,24 @@ bool change_display() {
       current_display = DISPLAY_RAINBOW_CYCLE;
       return true;
     }
+    if (strcasecmp(token, "sine") == 0) { 
+      current_display = DISPLAY_SINE; 
+      return true; 
+    }
+    if (strcasecmp(token, "plasma") == 0) { 
+      current_display = DISPLAY_PLASMA; 
+      return true; 
+    }
+    if (strcasecmp(token, "confetti") == 0) { 
+      current_display = DISPLAY_CONFETTI; 
+      return true; 
+    }
+    if (strcasecmp(token, "effectscycle") == 0) { 
+      current_display = DISPLAY_EFFECTS_CYCLE;
+      current_effect = 0;
+      last_effect_change = millis();
+      return true; 
+    }
     if (strcasecmp(token, "message") == 0) {
       current_display = DISPLAY_MESSAGE;
 
@@ -546,11 +654,6 @@ bool change_display() {
       snake_reset();
       return true;
     }
-
-    if (strcasecmp(token, "sine") == 0) { 
-      current_display = DISPLAY_SINE; 
-      return true; 
-    }
   }
   
   return false;
@@ -575,6 +678,15 @@ void loop() {
       break;
     case DISPLAY_SINE: 
       sine(); 
+      break;
+    case DISPLAY_PLASMA:
+      plasma();
+      break;
+    case DISPLAY_CONFETTI:
+      confetti();
+      break;
+    case DISPLAY_EFFECTS_CYCLE:
+      effects_cycle();
       break;
     case DISPLAY_MESSAGE:
       message();
